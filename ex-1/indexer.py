@@ -5,7 +5,7 @@ import logging
 from pathlib import Path
 
 # Import the main classes from your p-3.py file
-from p-3 import Treesitter, LanguageEnum
+from p3 import Treesitter, LanguageEnum
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 

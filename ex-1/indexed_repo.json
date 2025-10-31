@@ -1,0 +1,36 @@
+{
+  "app.py": {
+    "classes": [
+      {
+        "name": "User",
+        "type": "class",
+        "methods": [
+          "def __init__(self, name):\r",
+          "def get_name(self):\r"
+        ]
+      }
+    ],
+    "functions": [
+      {
+        "name": "main_func",
+        "type": "function",
+        "class_name": null,
+        "doc_comment": ""
+      }
+    ],
+    "methods": [
+      {
+        "name": "__init__",
+        "type": "method",
+        "class_name": "User",
+        "doc_comment": ""
+      },
+      {
+        "name": "get_name",
+        "type": "method",
+        "class_name": "User",
+        "doc_comment": ""
+      }
+    ]
+  }
+}

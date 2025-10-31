@@ -1,101 +1,118 @@
-# visualize.py
+# visualize_dynamic.py
 import json
-import networkx as nx
-import matplotlib.pyplot as plt
 import logging
+import sys
+from pyvis.network import Network
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 
-def draw_repo_graph(index_file="indexed_repo.json", output_image="repo_graph.png"):
+def draw_dynamic_graph(index_file="indexed_repo.json", output_html="repo_graph_dynamic.html"):
     """
-    Loads the repo index and draws a graph of its structure.
+    Loads the repo index and draws a dynamic, interactive graph
+    using pyvis.
     """
     try:
         with open(index_file, 'r') as f:
             repo_index = json.load(f)
     except FileNotFoundError:
         logging.error(f"'{index_file}' not found. Did you run 'indexer.py' first?")
-        return
+        sys.exit(1)
     except json.JSONDecodeError:
-        logging.error(f"'{index_file}' is empty or corrupted. Please run 'indexer.py' again.")
+        logging.error(f"'{index_file}' is empty. Run 'indexer.py' again.")
+        sys.exit(1)
+
+    # Initialize pyvis network.
+    # We're setting a dark background to match your screenshot's feel.
+    net = Network(
+        height="80vh", 
+        width="100%", 
+        heading="Dynamic Repository Structure", 
+        directed=True,
+        bgcolor="#222222",  # Dark background
+        font_color="white"   # Light text
+    )
+
+    logging.info("Building dynamic graph from index...")
+    if not repo_index:
+        logging.warning("Index file is empty. No graph to generate.")
         return
 
-    G = nx.DiGraph() # Directed graph
+    # --- Define node styles ---
+    # Shapes: 'dot', 'square', 'database', 'box', 'text', 'diamond'
+    styles = {
+        'file': {'color': '#ff6e6e', 'shape': 'database', 'size': 20},
+        'class': {'color': '#6effa8', 'shape': 'box', 'size': 15},
+        'function': {'color': '#6e9bff', 'shape': 'dot', 'size': 10},
+        'method': {'color': '#fffc6e', 'shape': 'dot', 'size': 10}
+    }
 
-    logging.info("Building graph from index...")
+    node_ids = set() # To track added nodes
+
     for file_path, contents in repo_index.items():
-        # Add the file as a root node for this part of the graph
-        G.add_node(file_path, type='file')
+        # Add File Node
+        if file_path not in node_ids:
+            net.add_node(file_path, label=file_path, title=f"File: {file_path}", **styles['file'])
+            node_ids.add(file_path)
 
-        # Add class nodes and link them to the file
+        # Add Class Nodes and link to file
         for cls in contents.get('classes', []):
             class_name = cls['name']
-            G.add_node(class_name, type='class')
-            G.add_edge(file_path, class_name) # File -> Class
+            if class_name not in node_ids:
+                net.add_node(class_name, label=class_name, title=f"Class: {class_name}", **styles['class'])
+                node_ids.add(class_name)
+            net.add_edge(file_path, class_name)
 
-        # Add function nodes and link them to the file
+        # Add Function Nodes and link to file
         for func in contents.get('functions', []):
             func_name = func['name']
-            G.add_node(func_name, type='function')
-            G.add_edge(file_path, func_name) # File -> Function
-            
-        # Add method nodes and link them to their class
+            # Create a unique ID for functions, as two files might have a 'main'
+            node_id = f"{file_path}::{func_name}" 
+            if node_id not in node_ids:
+                net.add_node(node_id, label=func_name, title=f"Function: {func_name}", **styles['function'])
+                node_ids.add(node_id)
+            net.add_edge(file_path, node_id)
+        
+        # Add Method Nodes and link to their class
         for meth in contents.get('methods', []):
             meth_name = meth['name']
             class_name = meth.get('class_name')
+            # Create a unique ID for methods
+            node_id = f"{class_name}::{meth_name}"
             
-            if class_name and G.has_node(class_name):
-                G.add_node(meth_name, type='method')
-                G.add_edge(class_name, meth_name) # Class -> Method
+            if class_name and class_name in node_ids:
+                if node_id not in node_ids:
+                    net.add_node(node_id, label=meth_name, title=f"Method: {meth_name}", **styles['method'])
+                    node_ids.add(node_id)
+                net.add_edge(class_name, node_id)
             elif class_name:
                 logging.warning(f"Method '{meth_name}' references unknown class '{class_name}'")
 
-    if G.number_of_nodes() == 0:
+    if not node_ids:
         logging.warning("Graph is empty. No nodes were found in the index.")
         return
 
-    # --- Draw the graph ---
-    logging.info(f"Drawing graph with {G.number_of_nodes()} nodes and {G.number_of_edges()} edges...")
-    plt.figure(figsize=(16, 12))
-    
-    # Position nodes using a spring layout
-    pos = nx.spring_layout(G, k=0.8, iterations=50) 
-    
-    # Color nodes by type
-    colors = []
-    for node in G.nodes():
-        node_type = G.nodes[node]['type']
-        if node_type == 'file':
-            colors.append('#ffb3ba') # red
-        elif node_type == 'class':
-            colors.append('#baffc9') # green
-        elif node_type == 'function':
-            colors.append('#bae1ff') # blue
-        elif node_type == 'method':
-            colors.append('#ffffba') # yellow
-        else:
-            colors.append('#e0e0e0') # grey
-    
-    nx.draw_networkx(
-        G,
-        pos,
-        with_labels=True,
-        node_color=colors,
-        node_size=3000,
-        font_size=10,
-        arrows=True,
-        arrowstyle='->',
-        arrowsize=15
-    )
-    plt.title("Repository Code Structure")
-    plt.axis('off') # Hide the axes
-    
-    # Save the graph to a file
-    plt.savefig(output_image)
-    logging.info(f"✅ Graph saved to {output_image}")
-    # You can also use plt.show() in a notebook
-    # plt.show()
-    
+    # Add physics-based layout options
+    net.set_options("""
+    {
+      "physics": {
+        "barnesHut": {
+          "gravitationalConstant": -40000,
+          "centralGravity": 0.1,
+          "springLength": 150
+        },
+        "solver": "barnesHut"
+      },
+      "interaction": {
+        "navigationButtons": true,
+        "tooltipDelay": 200
+      }
+    }
+    """)
+
+    # Save the graph to an HTML file
+    net.save_graph(output_html)
+    logging.info(f"✅ Dynamic graph saved! Open '{output_html}' in your browser.")
 
 if __name__ == "__main__":
-    draw_repo_graph()
+    # Make sure 'indexed_repo.json' exists by running 'indexer.py' first
+    draw_dynamic_graph()
