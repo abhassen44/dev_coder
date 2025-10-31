@@ -1,0 +1,35 @@
+# --- Files from your specific error ---
+
+# Ignore the environment file containing secrets
+prototype/.env
+
+# Ignore the entire Python virtual environment
+prototype/.venv
+
+# --- General Python ---
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Distribution / packaging
+build/
+dist/
+*.egg-info/
+*.egg
+venv/
+env/
+
+# --- Common IDE/OS Files ---
+# VS Code
+.vscode/
+
+# PyCharm
+.idea/
+
+# macOS
+.DS_Store
+
+# Windows
+Thumbs.db
