@@ -35,3 +35,4 @@ env/
 Thumbs.db
 
 .env 
+ex-1/.env:1
