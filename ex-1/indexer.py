@@ -1,98 +1,137 @@
-# indexer.py
 import os
+import sys
 import json
-import logging
-from pathlib import Path
+import base64
+import requests
+from datetime import datetime
+from dotenv import load_dotenv
 
-# Import the main classes from your p-3.py file
-from p3 import Treesitter, LanguageEnum
+# Load .env file
+load_dotenv()
 
-logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 
-def serialize_nodes(nodes):
-    """
-    Converts a list of TreesitterClassNode or TreesitterMethodNode
-    objects into a simple list of dictionaries for JSON.
-    """
-    output = []
-    for node in nodes:
-        # We only serialize the data we need, not the internal 'node' object
-        if hasattr(node, 'method_declarations'): # It's a ClassNode
-            output.append({
-                "name": node.name,
-                "type": "class",
-                "methods": [decl.split('\n', 1)[0] for decl in node.method_declarations] # Just get method signature
-            })
-        elif hasattr(node, 'method_source_code'): # It's a MethodNode
-             output.append({
-                "name": node.name,
-                "type": "function" if node.class_name is None else "method",
-                "class_name": node.class_name,
-                "doc_comment": node.doc_comment
-            })
-    return output
+# --- ⚙️ CONFIGURATION ---
+CONFIG = {
+    'OWNER': 'abhassen44',                     # The owner of the repository
+    'REPO': 'gen-qi',                     # The name of the repository
+    # Add the file extensions you want to index. (e.g., '.js', '.py', '.go')
+    'FILE_EXTENSIONS_TO_INDEX': ['.py', '.md', '.txt'],
+    # For the prototype, we'll limit the number of files to avoid long runs
+    'MAX_FILES_TO_INDEX': 20,
+    'OUTPUT_FILE': 'indexed_repo.json'
+}
+# --- END CONFIGURATION ---
 
-def index_repository(repo_path, output_file="indexed_repo.json"):
-    """
-    Scans a directory for Python files, parses them, and saves
-    the structure to a JSON file.
-    """
-    
-    # Initialize the Python parser from p-3.py
+# Retrieve the token from environment variables
+GITHUB_TOKEN = os.getenv('GITHUB_TOKEN')
+API_URL = 'https://api.github.com'
+
+# Set up headers for all API requests
+HEADERS = {
+    'Authorization': f'Bearer {GITHUB_TOKEN}',
+    'Accept': 'application/vnd.github.v3+json',
+    'X-GitHub-Api-Version': '2022-11-28'
+}
+
+def main():
+    """Main function to orchestrate the indexing."""
+    print("Starting GitHub repository indexing...")
+
+    if not GITHUB_TOKEN:
+        print("❌ ERROR: GITHUB_TOKEN is not set. Please set it as an environment variable.")
+        sys.exit(1)
+
     try:
-        ts_parser = Treesitter(LanguageEnum.PYTHON)
-    except Exception as e:
-        logging.error(f"Failed to initialize parser. Did you run 'pip install -r requirements.txt' from p-3.py? Error: {e}")
-        return
+        # 1. Get the SHA of the latest commit on the default branch
+        print(f"[1/5] Fetching default branch info for {CONFIG['OWNER']}/{CONFIG['REPO']}...")
+        repo_info_res = requests.get(f"{API_URL}/repos/{CONFIG['OWNER']}/{CONFIG['REPO']}", headers=HEADERS)
+        repo_info_res.raise_for_status()
+        repo_info = repo_info_res.json()
+        default_branch = repo_info['default_branch']
 
-    repo_index = {}
-    
-    # Use pathlib.Path.rglob to recursively find all .py files
-    logging.info(f"Starting to index repository at: {repo_path}")
-    root_path = Path(repo_path)
-    
-    for file_path in root_path.rglob("*.py"):
-        # Get a relative path to use as the key in our JSON
-        relative_path = str(file_path.relative_to(root_path))
-        logging.info(f"Parsing: {relative_path}")
+        branch_info_res = requests.get(f"{API_URL}/repos/{CONFIG['OWNER']}/{CONFIG['REPO']}/branches/{default_branch}", headers=HEADERS)
+        branch_info_res.raise_for_status()
+        latest_commit_sha = branch_info_res.json()['commit']['sha']
+        print(f"✅ Default branch is '{default_branch}' at commit SHA: {latest_commit_sha}")
 
-        try:
-            with open(file_path, 'rb') as f:
-                file_bytes = f.read()
+        # 2. Get the entire repository file tree
+        print("[2/5] Fetching repository file tree...")
+        tree_res = requests.get(f"{API_URL}/repos/{CONFIG['OWNER']}/{CONFIG['REPO']}/git/trees/{latest_commit_sha}?recursive=1", headers=HEADERS)
+        tree_res.raise_for_status()
+        all_files = tree_res.json()['tree']
+
+        # 3. Filter for relevant files based on extension
+        # Note: file['path'].endswith() takes a tuple of extensions
+        extensions_tuple = tuple(CONFIG['FILE_EXTENSIONS_TO_INDEX'])
+        files_to_index = []
+        for file in all_files:
+            if file['type'] == 'blob' and file['path'].endswith(extensions_tuple):
+                files_to_index.append(file)
+        files_to_index = files_to_index[:CONFIG['MAX_FILES_TO_INDEX']]
+
+        print(f"✅ Found {len(files_to_index)} files to index.")
+        # 4. Fetch the content for each file
+        print("[3/5] Fetching content for each file...")
+        indexed_files = []
+        for file in files_to_index:
+            blob_res = requests.get(file['url'], headers=HEADERS)
+            blob_res.raise_for_status()
+            blob_content_base64 = blob_res.json()['content']
             
-            # Use the parse method from p-3.py
-            classes, methods = ts_parser.parse(file_bytes)
-            
-            # Store the results in our index
-            repo_index[relative_path] = {
-                "classes": serialize_nodes(classes),
-                "functions": serialize_nodes([m for m in methods if m.class_name is None]), # Standalone functions
-                "methods": serialize_nodes([m for m in methods if m.class_name is not None]) # Class methods
+            # Decode the base64 content
+            try:
+                decoded_content = base64.b64decode(blob_content_base64).decode('utf-8')
+                indexed_files.append({'path': file['path'], 'content': decoded_content})
+            except UnicodeDecodeError:
+                print(f"  ⚠️  Could not decode file: {file['path']} (skipping)")
+
+        print("✅ All file contents fetched.")
+
+        # 5. Fetch recent commit history for context
+        print("[4/5] Fetching commit history...")
+        commits_res = requests.get(f"{API_URL}/repos/{CONFIG['OWNER']}/{CONFIG['REPO']}/commits?per_page=10", headers=HEADERS)
+        commits_res.raise_for_status()
+        # commit_history = [
+        #     {
+        #         'sha': commit['sha'],
+        #         'author': commit['commit']['author']['name'],
+        #         'date': commit['commit']['author']['date'],
+        #         'message': commit['commit']['message']
+        #     } for commit in commits_res.json()
+        # ]
+
+        commit_history = []
+        for commit in commits_res.json():
+            commit_info = {
+                'sha': commit['sha'],
+                'author': commit['commit']['author']['name'], 
+                'date': commit['commit']['author']['date'],
+                'message': commit['commit']['message']
             }
+            commit_history.append(commit_info)
+            
+        commit_history = []
+        print("✅ Commit history fetched.")
 
-        except Exception as e:
-            logging.error(f"Failed to parse {relative_path}: {e}")
+        # Assemble the final JSON object
+        final_output = {
+            'repository': f"{CONFIG['OWNER']}/{CONFIG['REPO']}",
+            'indexedAt': datetime.utcnow().isoformat() + "Z",
+            'files': indexed_files,
+            'commitHistory': commit_history
+        }
 
-    # Write the final index to the JSON file
-    with open(output_file, 'w', encoding='utf8') as f:
-        json.dump(repo_index, f, indent=2)
-        
-    logging.info(f"✅ Indexing complete! Data saved to {output_file}")
+        # Write to output file
+        print(f"[5/5] Writing all data to {CONFIG['OUTPUT_FILE']}...")
+        with open(CONFIG['OUTPUT_FILE'], 'w', encoding='utf-8') as f:
+            json.dump(final_output, f, indent=2)
 
-if __name__ == "__main__":
-    # --- IMPORTANT ---
-    # Create a folder named 'my_test_project' and put some
-    # .py files in it to test this.
-    #
-    # Example:
-    # my_test_project/
-    # |-- utils.py
-    # |-- main.py
-    #
-    PROJECT_DIR = "my_test_project" # <--- Point this to your code repo
-    
-    if not os.path.exists(PROJECT_DIR):
-        logging.warning(f"Test directory '{PROJECT_DIR}' not found.")
-        logging.warning("Please create it and add some Python files to scan.")
-    else:
-        index_repository(PROJECT_DIR)
+        print(f"\n🎉 Indexing complete! Check the '{CONFIG['OUTPUT_FILE']}' file.")
+
+    except requests.exceptions.HTTPError as e:
+        print(f"❌ API Error: {e.response.status_code} - {e.response.text}")
+    except Exception as e:
+        print(f"❌ An unexpected error occurred: {e}")
+
+if __name__ == '__main__':
+    main()

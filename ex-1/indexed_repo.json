@@ -1,36 +1,55 @@
 {
-  "app.py": {
-    "classes": [
-      {
-        "name": "User",
-        "type": "class",
-        "methods": [
-          "def __init__(self, name):\r",
-          "def get_name(self):\r"
-        ]
-      }
-    ],
-    "functions": [
-      {
-        "name": "main_func",
-        "type": "function",
-        "class_name": null,
-        "doc_comment": ""
-      }
-    ],
-    "methods": [
-      {
-        "name": "__init__",
-        "type": "method",
-        "class_name": "User",
-        "doc_comment": ""
-      },
-      {
-        "name": "get_name",
-        "type": "method",
-        "class_name": "User",
-        "doc_comment": ""
-      }
-    ]
-  }
+  "repository": "abhassen44/gen-qi",
+  "indexedAt": "2025-11-06T14:02:33.294065Z",
+  "files": [
+    {
+      "path": "app/db/__init__.py",
+      "content": ""
+    },
+    {
+      "path": "app/db/client.py",
+      "content": "from pymongo import AsyncMongoClient\n\nmongo_client = AsyncMongoClient(\"mongodb://admin:admin@mongo:27017\")\n"
+    },
+    {
+      "path": "app/db/collections/__init__.py",
+      "content": ""
+    },
+    {
+      "path": "app/db/collections/files.py",
+      "content": "from pydantic import Field\nfrom typing import Optional, TypedDict\nfrom pymongo.asynchronous.collection import AsyncCollection\nfrom ..db import database\n\n\nclass FileSchema(TypedDict):\n    name: str = Field(..., description=\"Name of the file\")\n    status: str = Field(..., description=\"Status of the file\")\n    result: Optional[str] = Field(\n        None, description=\"result of AI\"\n    )\n\n\nCOLLECTION_NAME = \"files\"\nfiles_collections: AsyncCollection = database[COLLECTION_NAME]\n"
+    },
+    {
+      "path": "app/db/db.py",
+      "content": "from .client import mongo_client\n\ndatabase = mongo_client[\"mydb\"]\n"
+    },
+    {
+      "path": "app/main.py",
+      "content": "from .server import app\n\n\ndef main():\n    import uvicorn\n\n    uvicorn.run(app=app, host=\"0.0.0.0\", port=8000)\n\n\nmain()\n"
+    },
+    {
+      "path": "app/queue/q.py",
+      "content": "from redis import Redis\nfrom rq import Queue\n\nq = Queue(connection=Redis(host='valkey', port=6379))\n"
+    },
+    {
+      "path": "app/queue/workers.py",
+      "content": "from ..db.collections.files import files_collections\nfrom bson import ObjectId\nimport os\nfrom pdf2image import convert_from_path\nimport base64\nimport google.generativeai as genai\n\n\ngenai.configure(api_key=\"AIzaSyBFqwL2xnA7lJGf3tbzXQF64nNkaoWaKDM\")\n\n\ndef encode_image(image_path):\n\n    with open(image_path, \"rb\") as image_file:\n        return base64.b64encode(image_file.read()).decode(\"utf-8\")\n\n\nasync def process_file(id: str, file_path: str):\n\n    # Update file status to 'processing'\n    await files_collections.update_one({\"_id\": ObjectId(id)}, {\n        \"$set\": {\n            \"status\": \"processing\"\n        }\n    })\n\n    # Update file status to 'converting to images'\n    await files_collections.update_one({\"_id\": ObjectId(id)}, {\n        \"$set\": {\n            \"status\": \"converting to images\"\n        }\n    })\n\n    # Step 1: Convert the PDF to images\n    pages = convert_from_path(file_path)\n    images = []\n\n    for i, page in enumerate(pages):\n        # Define the path to save each image\n        image_save_path = f\"/mnt/uploads/images/{id}/image-{i}.jpg\"\n        # Create directories if they don't exist\n        os.makedirs(os.path.dirname(image_save_path), exist_ok=True)\n        # Save the page as a JPEG image\n        page.save(image_save_path, 'JPEG')\n        images.append(image_save_path)\n\n    # Update file status to 'converting to images success'\n    await files_collections.update_one({\"_id\": ObjectId(id)}, {\n        \"$set\": {\n            \"status\": \"converting to images success\"\n        }\n    })\n\n    # Encode all generated images to base64\n    images_base64 = [encode_image(img) for img in images]\n\n    # Initialize the Gemini Vision model\n    model = genai.GenerativeModel(\"gemini-1.5-flash-latest\")\n\n    # Prepare the content for the Gemini API call\n    # The content is a list of parts, including text and image data.\n    # We are using the first image for the roast.\n    content_parts = [\n        {\"text\": \"Based on the resume below, Roast this resume\"},\n        {\n            \"mime_type\": \"image/jpeg\",\n            \"data\": images_base64[0]  # Use the first base64 encoded image\n        },\n    ]\n\n    try:\n        # Pass the content_parts list directly as the first argument,\n        # and include safety_settings as a keyword argument.\n        gemini_response = await model.generate_content_async(\n            content_parts\n        )\n        # Extract the generated text from the response\n        result_text = gemini_response.text\n    except Exception as e:\n        result_text = f\"Error processing with Gemini API: {e}\"\n        print(f\"Error calling Gemini API: {e}\")\n\n    # Update file status to 'processed' and store the result\n    await files_collections.update_one({\"_id\": ObjectId(id)}, {\n        \"$set\": {\n            \"status\": \"processed\",\n            \"result\": result_text\n        }\n    })\n"
+    },
+    {
+      "path": "app/server.py",
+      "content": "from fastapi import FastAPI, UploadFile, Path\nfrom .utils.file import save_to_disk\nfrom .db.collections.files import files_collections, FileSchema\nfrom .queue.q import q\nfrom .queue.workers import process_file\nfrom bson import ObjectId\n\napp = FastAPI()\n\n\n@app.get(\"/\")\ndef hello():\n    return {\"status\": \"healthy\"}\n\n\n@app.get(\"/{id}\")\nasync def get_file_by_id(id: str = Path(..., description=\"ID of the file\")):\n    db_file = await files_collections.find_one({\"_id\": ObjectId(id)})\n\n    print(db_file)\n\n    return {\n        \"_id\": str(db_file[\"_id\"]),\n        \"name\": db_file[\"name\"],\n        \"status\": db_file[\"status\"],\n        \"result\": db_file[\"result\"] if \"result\" in db_file else None,\n    }\n\n\n@app.post(\"/upload\")\nasync def upload_file(\n    file: UploadFile\n):\n\n    db_file = await files_collections.insert_one(\n        document=FileSchema(\n            name=file.filename,\n            status=\"saving\"\n        )\n    )\n\n    file_path = f\"/mnt/uploads/{str(db_file.inserted_id)}/{file.filename}\"\n\n    await save_to_disk(file=await file.read(), path=file_path)\n\n    # Push to Queue\n    q.enqueue(process_file, str(db_file.inserted_id), file_path)\n\n    # MongoDB Save\n    await files_collections.update_one({\"_id\": db_file.inserted_id}, {\n        \"$set\": {\n            \"status\": \"queued\"\n        }\n    })\n\n    return {\"file_id\": str(db_file.inserted_id)}\n"
+    },
+    {
+      "path": "app/utils/__init__.py",
+      "content": ""
+    },
+    {
+      "path": "app/utils/file.py",
+      "content": "import os\nimport aiofiles\n\n\nasync def save_to_disk(file: bytes, path: str) -> bool:\n    os.makedirs(os.path.dirname(path), exist_ok=True)\n    async with aiofiles.open(path, 'wb') as f:\n        await f.write(file)\n    return True\n"
+    },
+    {
+      "path": "requirements.txt",
+      "content": "aiofiles==24.1.0\nannotated-types==0.7.0\nanyio==4.9.0\ncachetools==5.5.2\ncertifi==2025.4.26\ncharset-normalizer==3.4.2\nclick==8.1.8\ndnspython==2.7.0\nemail_validator==2.2.0\nfastapi==0.115.12\nfastapi-cli==0.0.7\ngoogle-ai-generativelanguage==0.6.15\ngoogle-api-core==2.25.0\ngoogle-api-python-client==2.171.0\ngoogle-auth==2.40.2\ngoogle-auth-httplib2==0.2.0\ngoogle-generativeai==0.8.5\ngoogleapis-common-protos==1.70.0\ngrpcio==1.72.1\ngrpcio-status==1.71.0\nh11==0.16.0\nhttpcore==1.0.9\nhttplib2==0.22.0\nhttptools==0.6.4\nhttpx==0.28.1\nidna==3.10\nitsdangerous==2.2.0\nJinja2==3.1.6\nmarkdown-it-py==3.0.0\nMarkupSafe==3.0.2\nmdurl==0.1.2\nmotor==3.7.1\norjson==3.10.18\npdf2image==1.17.0\npillow==11.2.1\nproto-plus==1.26.1\nprotobuf==5.29.5\npyasn1==0.6.1\npyasn1_modules==0.4.2\npydantic==2.11.5\npydantic-extra-types==2.10.4\npydantic-settings==2.9.1\npydantic_core==2.33.2\nPygments==2.19.1\npymongo==4.13.0\npyparsing==3.2.3\npython-dotenv==1.1.0\npython-multipart==0.0.20\nPyYAML==6.0.2\nredis==6.2.0\nrequests==2.32.3\nrich==14.0.0\nrich-toolkit==0.14.6\nrq==2.3.3\nrsa==4.9.1\nshellingham==1.5.4\nsniffio==1.3.1\nstarlette==0.46.2\ntqdm==4.67.1\ntyper==0.15.4\ntyping-inspection==0.4.1\ntyping_extensions==4.13.2\nujson==5.10.0\nuritemplate==4.2.0\nurllib3==2.4.0\nuvicorn==0.34.2\nuvloop==0.21.0\nwatchfiles==1.0.5\nwebsockets==15.0.1\n"
+    }
+  ],
+  "commitHistory": []
 }
