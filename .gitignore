@@ -33,3 +33,5 @@ env/
 
 # Windows
 Thumbs.db
+
+.env 
