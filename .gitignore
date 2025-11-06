@@ -1,38 +1,42 @@
-# --- Files from your specific error ---
+# Environment files (anywhere in the project)
+.env
+**/.env
+*.env
 
-# Ignore the environment file containing secrets
-prototype/.env
+# Python virtual environments
+.venv/
+**/.venv/
+venv/
+**/venv/
+env/
+**/env/
 
-# Ignore the entire Python virtual environment
-prototype/.venv
-
-# --- General Python ---
 # Byte-compiled / optimized / DLL files
 __pycache__/
-*.pyc
-*.pyo
-*.pyd
+**/__pycache__/
+*.py[cod]
+*$py.class
 
 # Distribution / packaging
 build/
 dist/
 *.egg-info/
 *.egg
-venv/
-env/
 
-# --- Common IDE/OS Files ---
-# VS Code
+# IDE files
 .vscode/
-
-# PyCharm
 .idea/
+*.swp
+*.swo
 
-# macOS
+# OS files
 .DS_Store
-
-# Windows
 Thumbs.db
 
-.env 
-ex-1/.env:1
+# Build output
+**/build/
+**/dist/
+
+# Temporary files
+*.log
+*.tmp
